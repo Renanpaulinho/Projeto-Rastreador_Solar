@@ -1,13 +1,15 @@
 <!DOCTYPE html>
 <html lang="pt-br">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Código Arduino R4 - Envio para ThingSpeak + Leitura + Rastreamento Solar</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Código Arduino R4 – Rastreador Solar</title>
 
-  <!-- Prism.js para destaque de sintaxe (opcional, mas pronto) -->
+  <!-- Prism.js e tema escuro -->
   <link href="https://cdn.jsdelivr.net/npm/prismjs/themes/prism-tomorrow.css" rel="stylesheet" />
   <script src="https://cdn.jsdelivr.net/npm/prismjs/prism.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs/components/prism-clike.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs/components/prism-cpp.min.js"></script>
 
   <style>
     body {
@@ -15,32 +17,30 @@
       padding: 20px;
       background-color: #1e1e1e;
       color: #d4d4d4;
-      font-family: 'Fira Code', monospace, monospace;
+      font-family: 'Fira Code', monospace;
     }
-
     h2 {
       font-family: 'Segoe UI', sans-serif;
       color: #ffffff;
       margin-bottom: 20px;
     }
-
     pre {
       background-color: #1e1e1e;
       color: #d4d4d4;
       padding: 20px;
       border-radius: 10px;
-      overflow-x: auto;
-      box-shadow: 0 0 10px rgba(0, 0, 0, 0.4);
+      overflow: auto;
+      box-shadow: 0 0 10px rgba(0,0,0,0.4);
       font-size: 14px;
       line-height: 1.5;
     }
-
-    code {
-      font-family: 'Fira Code', monospace, monospace;
-      white-space: pre-wrap;
-      word-wrap: break-word;
+    .token.comment,
+    .token.prolog,
+    .token.doctype,
+    .token.cdata {
+      color: #6A9955; /* verde dos comentários */
+      font-style: italic;
     }
-
     button {
       margin-top: 10px;
       padding: 10px 15px;
@@ -52,28 +52,20 @@
       border-radius: 5px;
       transition: background-color 0.2s ease;
     }
-
     button:hover {
       background-color: #005fa3;
     }
-
     @media (max-width: 600px) {
-      body {
-        padding: 10px;
-      }
-
-      pre {
-        font-size: 13px;
-      }
+      body { padding: 10px; }
+      pre { font-size: 13px; }
     }
   </style>
 </head>
 <body>
 
-  <h2>📟 Código Arduino R4: Controle de Servos, Leitura de Voltagem e Envio para ThingSpeak</h2>
+  <h2>📟 Código Arduino R4: Rastreamento Solar + ThingSpeak</h2>
 
-  <pre><code id="codigo" class="language-cpp"></code></pre>
-
+  <pre><code class="language-cpp" id="codigo"></code></pre>
   <button onclick="copiar()">📋 Copiar Código</button>
 
   <script>
@@ -90,7 +82,7 @@ Servo ServoBaixo;
 Servo servoAzimuth;
 Servo servoElevation;
 ArduinoLEDMatrix matrix;
-Neotimer timer(10000); // 10 segundos para simulação de rastreamento
+Neotimer timer(10000); // 10 segundos
 
 int anguloServoCima = 0;
 int anguloServoBaixo = 0;
@@ -123,7 +115,7 @@ void connectWiFi() {
   Serial.println(WiFi.localIP());
 }
 
-// Envia dados para ThingSpeak
+// Envia dados ao ThingSpeak
 void sendDataToThingSpeak(int value1, int value2, float voltage) {
   if (WiFi.status() == WL_CONNECTED) {
     WiFiClient client;
@@ -139,7 +131,7 @@ void sendDataToThingSpeak(int value1, int value2, float voltage) {
     if (httpResponseCode > 0) {
       Serial.println("Dados enviados ao ThingSpeak!");
     } else {
-      Serial.print("Erro ao enviar. Código: ");
+      Serial.print("Erro ao enviar: ");
       Serial.println(httpResponseCode);
     }
   } else {
@@ -150,11 +142,13 @@ void sendDataToThingSpeak(int value1, int value2, float voltage) {
 
 // Calcula posição solar simulada
 void calcAngular(int hora) {
-  float HRA = (15 * (hora - 12)) * 3.1416 / 180;
-  float ang_delta_rad = 23.45 * 3.1416 / 180;
-  float latitude = -22.9027 * 3.1416 / 180;
-  alpha = asin(sin(ang_delta_rad) * sin(latitude) + cos(ang_delta_rad) * cos(latitude) * cos(HRA)) * 180 / 3.1416;
-  gammaValue = acos((sin(ang_delta_rad) * cos(latitude) - cos(ang_delta_rad) * sin(latitude) * cos(HRA)) / cos(alpha)) * 180 / 3.1416;
+  float HRA = (15*(hora-12))*PI/180;
+  float ang_delta_rad = 23.45*PI/180;
+  float latitude = -22.9027*PI/180;
+  alpha = asin(sin(ang_delta_rad)*sin(latitude) +
+               cos(ang_delta_rad)*cos(latitude)*cos(HRA))*180/PI;
+  gammaValue = acos((sin(ang_delta_rad)*cos(latitude) -
+                     cos(ang_delta_rad)*sin(latitude)*cos(HRA))/cos(alpha))*180/PI;
 }
 
 // Setup
@@ -164,15 +158,12 @@ void setup() {
   matrix.play(true);
   Serial.begin(9600);
   connectWiFi();
-
-  // Servos
   ServoCima.attach(9);
   ServoBaixo.attach(6);
-  ServoCima.write(anguloServoCima);
-  ServoBaixo.write(anguloServoBaixo);
-
   servoAzimuth.attach(8);
   servoElevation.attach(9);
+  ServoCima.write(0);
+  ServoBaixo.write(0);
   servoAzimuth.write(0);
   servoElevation.write(60);
 }
@@ -180,53 +171,40 @@ void setup() {
 // Loop principal
 void loop() {
   matrix.loadSequence(LEDMATRIX_ANIMATION_TETRIS_INTRO);
-
-  // Movimento dos servos básicos
   unsigned long currentMillis = millis();
   if (currentMillis - previousMillis >= intervalo) {
     previousMillis = currentMillis;
-    anguloServoCima += adicao;
-    anguloServoBaixo += adicao;
-    if (anguloServoCima > 180) anguloServoCima = 0;
-    if (anguloServoBaixo > 180) anguloServoBaixo = 0;
+    anguloServoCima = (anguloServoCima + adicao) % 181;
+    anguloServoBaixo = (anguloServoBaixo + adicao) % 181;
     ServoCima.write(anguloServoCima);
     ServoBaixo.write(anguloServoBaixo);
   }
 
-  // Leitura de tensão simulada
-  voltagem_inicial = analogRead(entrada_voltagem);
-  voltagem_inicial = (voltagem_inicial / 1024.0) * 25.0;
+  voltagem_inicial = analogRead(entrada_voltagem) / 1024.0 * 25.0;
 
-  // Rastreamento solar simulado
   if (timer.repeat()) {
-    horaSimulada++;
-    if (horaSimulada >= 24) horaSimulada = 0;
+    horaSimulada = (horaSimulada + 1) % 24;
     calcAngular(horaSimulada);
     servoAzimuth.write(gammaValue);
     servoElevation.write(alpha);
-    Serial.print("Hora simulada: ");
-    Serial.print(horaSimulada);
-    Serial.print(" | Azimuth: ");
-    Serial.print(gammaValue);
-    Serial.print(" | Elevação: ");
-    Serial.println(alpha);
+    Serial.print("Hora: "); Serial.print(horaSimulada);
+    Serial.print(" | Azimuth: "); Serial.print(gammaValue);
+    Serial.print(" | Elevação: "); Serial.println(alpha);
   }
 
-  // Enviar tudo ao ThingSpeak
   sendDataToThingSpeak(ServoCima.read(), ServoBaixo.read(), voltagem_inicial);
   delay(1000);
-}`;
+}`; 
 
-     const codeBlock = document.getElementById("codigo");
-  codeBlock.textContent = codigoArduino;
-  Prism.highlightAll(); // Realça a sintaxe após inserir o texto
+    const block = document.getElementById("codigo");
+    block.textContent = codigoArduino;
+    Prism.highlightAll();
 
-  function copiar() {
-    navigator.clipboard.writeText(codigoArduino).then(() => {
-      const btn = document.querySelector("button");
-      btn.textContent = "✅ Copiado!";
-      setTimeout(() => btn.textContent = "📋 Copiar Código", 2000);
-    });
+    function copiar() {
+      const text = block.textContent;
+      navigator.clipboard.writeText(text).then(() => {
+        alert("✅ Código copiado!");
+      });
     }
   </script>
 
