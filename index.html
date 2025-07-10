@@ -53,132 +53,145 @@
   <pre><code class="language-cpp" id="codigo"></code></pre>
 
   <script>
-    const codigoArduino = `// Bibliotecas necessárias
-#include <WiFi.h>
-#include <ArduinoHttpClient.h>
-#include "Arduino_LED_Matrix.h"
-#include <Servo.h>
-#include <neotimer.h>
+    const codigoArduino = `// Bibliotecas necessárias para funcionamento do projeto
+#include <WiFi.h>                   // Conexão WiFi
+#include <ArduinoHttpClient.h>     // Comunicação com ThingSpeak via HTTP
+#include "Arduino_LED_Matrix.h"    // Controle da matriz de LEDs do Arduino R4
+#include <Servo.h>                 // Controle dos servos
+#include <neotimer.h>              // Temporizador para simular passagem de tempo
 
-// Objetos e variáveis
-Servo ServoCima;
-Servo ServoBaixo;
-Servo servoAzimuth;
-Servo servoElevation;
-ArduinoLEDMatrix matrix;
-Neotimer timer(10000); // 10 segundos
+// Criação dos objetos usados
+Servo servoAzimuth;                // Servo que representa o movimento horizontal (azimute)
+Servo servoElevation;             // Servo que representa o movimento vertical (elevação)
+ArduinoLEDMatrix matrix;          // Matriz de LEDs
+Neotimer timer(15000);            // Timer para simular 1 hora a cada 15 segundos
 
-int anguloServoCima = 0;
-int anguloServoBaixo = 0;
-const int adicao = 5;
-const unsigned long intervalo = 1000;
-unsigned long previousMillis = 0;
+// Variáveis globais
+const char* ssid = "SEU_SSID";          // Substitua pelo nome da sua rede WiFi
+const char* password = "SUA_SENHA";     // Substitua pela senha da sua rede WiFi
+const char* apiKey = "SUA_API_KEY";     // Substitua pela chave de API do seu canal ThingSpeak
+const char* channelID = "SEU_CANAL_ID"; // Substitua pelo ID do seu canal
 
-const char* ssid = "...."; // Substitua pelo seu SSID
-const char* password = "..."; // Substitua pela sua senha
-const char* apiKey = "..."; // Substitua pela sua chave API do ThingSpeak
-const char* channelID = "...."; // Substitua pelo seu ID de canal do ThingSpeak
+int horaSimulada = 12;     // Hora simulada inicial (começa ao meio-dia)
+float alpha = 0.0;         // Ângulo de elevação solar (graus)
+float gammaValue = 0.0;    // Ângulo de azimute solar (graus)
 
-int horaSimulada = 12;
-float alpha = 0.0;
-float gammaValue = 0.0;
+int entrada_voltagem = A0; // Pino de leitura da tensão simulada
+float voltagem_inicial = 0; // Variável para armazenar a leitura da tensão
 
-int entrada_voltagem = A0;
-float voltagem_inicial = 0;
-
-// Conecta ao WiFi
+// Função que conecta o Arduino à rede WiFi
 void connectWiFi() {
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
-    Serial.print("Connecting to WiFi...");
-    Serial.println(WiFi.status());
+    Serial.println("Conectando ao WiFi...");
   }
-  Serial.println("Connected to WiFi");
-  Serial.print("IP address: ");
+  Serial.println("WiFi conectado!");
+  Serial.print("IP local: ");
   Serial.println(WiFi.localIP());
+  matrix.loadFrame(LEDMATRIX_HEART); // Mostra ícone de sucesso na matriz
 }
 
-// Envia dados ao ThingSpeak
-void sendDataToThingSpeak(int value1, int value2, float voltage) {
+// Função que envia dados ao canal ThingSpeak
+void sendDataToThingSpeak(int azimute, int elevacao, float voltage) {
   if (WiFi.status() == WL_CONNECTED) {
     WiFiClient client;
     HttpClient http(client, "api.thingspeak.com", 80);
+
+    // Monta a URL com os dados a serem enviados
     String url = "/update?api_key=" + String(apiKey) +
-                 "&field1=" + String(value1) +
-                 "&field2=" + String(value2) +
+                 "&field1=" + String(azimute) +
+                 "&field2=" + String(elevacao) +
                  "&field3=" + String(voltage);
+
     http.beginRequest();
     http.get(url);
     http.endRequest();
+
     int httpResponseCode = http.responseStatusCode();
     if (httpResponseCode > 0) {
       Serial.println("Dados enviados ao ThingSpeak!");
+      matrix.loadFrame(LEDMATRIX_CHECK); // Mostra ícone de sucesso na matriz
     } else {
       Serial.print("Erro ao enviar: ");
       Serial.println(httpResponseCode);
+      matrix.loadFrame(LEDMATRIX_DANGER); // Mostra ícone de erro
     }
   } else {
     Serial.println("WiFi não conectado");
     matrix.loadFrame(LEDMATRIX_DANGER);
+    connectWiFi(); // Tenta reconectar
   }
 }
 
-// Calcula posição solar simulada
+// Função que calcula o ângulo do Sol com base na hora simulada
 void calcAngular(int hora) {
-  float HRA = (15*(hora-12))*PI/180;
-  float ang_delta_rad = 23.45*PI/180;
-  float latitude = -22.9027*PI/180;
-  alpha = asin(sin(ang_delta_rad)*sin(latitude) +
-               cos(ang_delta_rad)*cos(latitude)*cos(HRA))*180/PI;
-  gammaValue = acos((sin(ang_delta_rad)*cos(latitude) -
-                     cos(ang_delta_rad)*sin(latitude)*cos(HRA))/cos(alpha))*180/PI;
+  // HRA: Hora angular (em radianos)
+  float HRA = (15 * (hora - 12)) * PI / 180;
+
+  // Declinação solar e latitude fixadas (em radianos)
+  float ang_delta_rad = 23.45 * PI / 180;     // Inclinação da Terra
+  float latitude = -22.9027 * PI / 180;       // Latitude do Rio de Janeiro
+
+  // Cálculo da elevação (alpha)
+  float alpha_rad = asin(sin(ang_delta_rad) * sin(latitude) +
+                         cos(ang_delta_rad) * cos(latitude) * cos(HRA));
+  alpha = alpha_rad * 180 / PI;
+
+  // Cálculo do azimute (gamma)
+  float gamma_rad = acos((sin(ang_delta_rad) * cos(latitude) -
+                         cos(ang_delta_rad) * sin(latitude) * cos(HRA)) / cos(alpha_rad));
+  gammaValue = gamma_rad * 180 / PI;
+
+  // Limita os ângulos entre 0 e 180 graus (faixa permitida pelo servo)
+  if (alpha < 0) alpha = 0;
+  if (alpha > 180) alpha = 180;
+  if (gammaValue < 0) gammaValue = 0;
+  if (gammaValue > 180) gammaValue = 180;
 }
 
-// Setup
+// Função de configuração (executada uma vez ao ligar o Arduino)
 void setup() {
-  matrix.begin();
-  matrix.loadSequence(LEDMATRIX_ANIMATION_WIFI_SEARCH);
-  matrix.play(true);
-  Serial.begin(9600);
-  connectWiFi();
-  ServoCima.attach(9);
-  ServoBaixo.attach(6);
-  servoAzimuth.attach(8);
-  servoElevation.attach(9);
-  ServoCima.write(0);
-  ServoBaixo.write(0);
-  servoAzimuth.write(0);
+  matrix.begin();                               // Inicializa a matriz de LEDs
+  matrix.loadSequence(LEDMATRIX_ANIMATION_WIFI_SEARCH); // Mostra animação de conexão
+  matrix.play(true);                            // Roda animação contínua
+
+  Serial.begin(9600);                           // Inicializa monitor serial
+  connectWiFi();                                // Conecta à rede WiFi
+
+  servoAzimuth.attach(8);                       // Conecta o servo horizontal ao pino 8
+  servoElevation.attach(9);                     // Conecta o servo vertical ao pino 9
+
+  servoAzimuth.write(0);                        // Posição inicial
   servoElevation.write(60);
 }
 
-// Loop principal
+// Loop principal (roda infinitamente)
 void loop() {
-  matrix.loadSequence(LEDMATRIX_ANIMATION_TETRIS_INTRO);
-  unsigned long currentMillis = millis();
-  if (currentMillis - previousMillis >= intervalo) {
-    previousMillis = currentMillis;
-    anguloServoCima = (anguloServoCima + adicao) % 181;
-    anguloServoBaixo = (anguloServoBaixo + adicao) % 181;
-    ServoCima.write(anguloServoCima);
-    ServoBaixo.write(anguloServoBaixo);
-  }
-
+  // Lê a tensão analógica (simulando a saída de um painel solar)
   voltagem_inicial = analogRead(entrada_voltagem) / 1024.0 * 25.0;
 
+  // A cada 15 segundos, simula a passagem de 1 hora
   if (timer.repeat()) {
-    horaSimulada = (horaSimulada + 1) % 24;
-    calcAngular(horaSimulada);
+    horaSimulada = (horaSimulada + 1) % 24;  // Incrementa a hora simulada
+    calcAngular(horaSimulada);               // Atualiza os ângulos do Sol
+
+    // Move os servos para simular rastreamento solar
     servoAzimuth.write(gammaValue);
     servoElevation.write(alpha);
+
+    // Mostra os dados no monitor serial
     Serial.print("Hora: "); Serial.print(horaSimulada);
-    Serial.print(" | Azimuth: "); Serial.print(gammaValue);
+    Serial.print(" | Azimute: "); Serial.print(gammaValue);
     Serial.print(" | Elevação: "); Serial.println(alpha);
   }
 
-  sendDataToThingSpeak(ServoCima.read(), ServoBaixo.read(), voltagem_inicial);
-  delay(1000);
-}`; 
+  // Envia os dados atuais para a nuvem (ThingSpeak)
+  sendDataToThingSpeak(servoAzimuth.read(), servoElevation.read(), voltagem_inicial);
+
+  delay(1000); // Aguarda 1 segundo antes do próximo ciclo
+}
+`; 
 
     const block = document.getElementById("codigo");
     block.textContent = codigoArduino;
