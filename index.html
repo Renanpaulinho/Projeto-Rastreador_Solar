@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Código Arduino R4 - Envio para ThingSpeak + Leitura + Rastreamento Solar</title>
+
+  <!-- Prism.js para destaque de sintaxe (opcional, mas pronto) -->
+  <link href="https://cdn.jsdelivr.net/npm/prismjs/themes/prism-tomorrow.css" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/prismjs/prism.js"></script>
+
+  <style>
+    body {
+      margin: 0;
+      padding: 20px;
+      background-color: #1e1e1e;
+      color: #d4d4d4;
+      font-family: 'Fira Code', monospace, monospace;
+    }
+
+    h2 {
+      font-family: 'Segoe UI', sans-serif;
+      color: #ffffff;
+      margin-bottom: 20px;
+    }
+
+    pre {
+      background-color: #1e1e1e;
+      color: #d4d4d4;
+      padding: 20px;
+      border-radius: 10px;
+      overflow-x: auto;
+      box-shadow: 0 0 10px rgba(0, 0, 0, 0.4);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    code {
+      font-family: 'Fira Code', monospace, monospace;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+
+    button {
+      margin-top: 10px;
+      padding: 10px 15px;
+      font-size: 14px;
+      cursor: pointer;
+      border: none;
+      background-color: #007acc;
+      color: white;
+      border-radius: 5px;
+      transition: background-color 0.2s ease;
+    }
+
+    button:hover {
+      background-color: #005fa3;
+    }
+
+    @media (max-width: 600px) {
+      body {
+        padding: 10px;
+      }
+
+      pre {
+        font-size: 13px;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <h2>📟 Código Arduino R4: Controle de Servos, Leitura de Voltagem e Envio para ThingSpeak</h2>
+
+  <pre><code id="codigo" class="language-cpp"></code></pre>
+
+  <button onclick="copiar()">📋 Copiar Código</button>
+
+  <script>
+    const codigoArduino = `// Bibliotecas necessárias
+#include <WiFi.h>
+#include <ArduinoHttpClient.h>
+#include "Arduino_LED_Matrix.h"
+#include <Servo.h>
+#include <neotimer.h>
+
+// Objetos e variáveis
+Servo ServoCima;
+Servo ServoBaixo;
+Servo servoAzimuth;
+Servo servoElevation;
+ArduinoLEDMatrix matrix;
+Neotimer timer(10000); // 10 segundos para simulação de rastreamento
+
+int anguloServoCima = 0;
+int anguloServoBaixo = 0;
+const int adicao = 5;
+const unsigned long intervalo = 1000;
+unsigned long previousMillis = 0;
+
+const char* ssid = "iPhone do Pedro";
+const char* password = "arduinoR4";
+const char* apiKey = "ORERHAPN9BMUHMK4";
+const char* channelID = "2735710";
+
+int horaSimulada = 12;
+float alpha = 0.0;
+float gammaValue = 0.0;
+
+int entrada_voltagem = A0;
+float voltagem_inicial = 0;
+
+// Conecta ao WiFi
+void connectWiFi() {
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print("Connecting to WiFi...");
+    Serial.println(WiFi.status());
+  }
+  Serial.println("Connected to WiFi");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
+// Envia dados para ThingSpeak
+void sendDataToThingSpeak(int value1, int value2, float voltage) {
+  if (WiFi.status() == WL_CONNECTED) {
+    WiFiClient client;
+    HttpClient http(client, "api.thingspeak.com", 80);
+    String url = "/update?api_key=" + String(apiKey) +
+                 "&field1=" + String(value1) +
+                 "&field2=" + String(value2) +
+                 "&field3=" + String(voltage);
+    http.beginRequest();
+    http.get(url);
+    http.endRequest();
+    int httpResponseCode = http.responseStatusCode();
+    if (httpResponseCode > 0) {
+      Serial.println("Dados enviados ao ThingSpeak!");
+    } else {
+      Serial.print("Erro ao enviar. Código: ");
+      Serial.println(httpResponseCode);
+    }
+  } else {
+    Serial.println("WiFi não conectado");
+    matrix.loadFrame(LEDMATRIX_DANGER);
+  }
+}
+
+// Calcula posição solar simulada
+void calcAngular(int hora) {
+  float HRA = (15 * (hora - 12)) * 3.1416 / 180;
+  float ang_delta_rad = 23.45 * 3.1416 / 180;
+  float latitude = -22.9027 * 3.1416 / 180;
+  alpha = asin(sin(ang_delta_rad) * sin(latitude) + cos(ang_delta_rad) * cos(latitude) * cos(HRA)) * 180 / 3.1416;
+  gammaValue = acos((sin(ang_delta_rad) * cos(latitude) - cos(ang_delta_rad) * sin(latitude) * cos(HRA)) / cos(alpha)) * 180 / 3.1416;
+}
+
+// Setup
+void setup() {
+  matrix.begin();
+  matrix.loadSequence(LEDMATRIX_ANIMATION_WIFI_SEARCH);
+  matrix.play(true);
+  Serial.begin(9600);
+  connectWiFi();
+
+  // Servos
+  ServoCima.attach(9);
+  ServoBaixo.attach(6);
+  ServoCima.write(anguloServoCima);
+  ServoBaixo.write(anguloServoBaixo);
+
+  servoAzimuth.attach(8);
+  servoElevation.attach(9);
+  servoAzimuth.write(0);
+  servoElevation.write(60);
+}
+
+// Loop principal
+void loop() {
+  matrix.loadSequence(LEDMATRIX_ANIMATION_TETRIS_INTRO);
+
+  // Movimento dos servos básicos
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillis >= intervalo) {
+    previousMillis = currentMillis;
+    anguloServoCima += adicao;
+    anguloServoBaixo += adicao;
+    if (anguloServoCima > 180) anguloServoCima = 0;
+    if (anguloServoBaixo > 180) anguloServoBaixo = 0;
+    ServoCima.write(anguloServoCima);
+    ServoBaixo.write(anguloServoBaixo);
+  }
+
+  // Leitura de tensão simulada
+  voltagem_inicial = analogRead(entrada_voltagem);
+  voltagem_inicial = (voltagem_inicial / 1024.0) * 25.0;
+
+  // Rastreamento solar simulado
+  if (timer.repeat()) {
+    horaSimulada++;
+    if (horaSimulada >= 24) horaSimulada = 0;
+    calcAngular(horaSimulada);
+    servoAzimuth.write(gammaValue);
+    servoElevation.write(alpha);
+    Serial.print("Hora simulada: ");
+    Serial.print(horaSimulada);
+    Serial.print(" | Azimuth: ");
+    Serial.print(gammaValue);
+    Serial.print(" | Elevação: ");
+    Serial.println(alpha);
+  }
+
+  // Enviar tudo ao ThingSpeak
+  sendDataToThingSpeak(ServoCima.read(), ServoBaixo.read(), voltagem_inicial);
+  delay(1000);
+}`;
+
+     const codeBlock = document.getElementById("codigo");
+  codeBlock.textContent = codigoArduino;
+  Prism.highlightAll(); // Realça a sintaxe após inserir o texto
+
+  function copiar() {
+    navigator.clipboard.writeText(codigoArduino).then(() => {
+      const btn = document.querySelector("button");
+      btn.textContent = "✅ Copiado!";
+      setTimeout(() => btn.textContent = "📋 Copiar Código", 2000);
+    });
+    }
+  </script>
+
+</body>
+</html>
