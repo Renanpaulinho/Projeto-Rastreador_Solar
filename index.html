@@ -53,143 +53,221 @@
   <pre><code class="language-cpp" id="codigo"></code></pre>
 
   <script>
-    const codigoArduino = `// Bibliotecas necessárias para funcionamento do projeto
-#include <WiFi.h>                   // Conexão WiFi
-#include <ArduinoHttpClient.h>     // Comunicação com ThingSpeak via HTTP
-#include "Arduino_LED_Matrix.h"    // Controle da matriz de LEDs do Arduino R4
-#include <Servo.h>                 // Controle dos servos
-#include <neotimer.h>              // Temporizador para simular passagem de tempo
+    const codigoArduino =  `#include <WiFi.h>
+#include <ArduinoHttpClient.h>
+#include "Arduino_LED_Matrix.h"
+#include <Servo.h>
+#include <EEPROM.h>
 
-// Criação dos objetos usados
-Servo servoAzimuth;                // Servo que representa o movimento horizontal (azimute)
-Servo servoElevation;             // Servo que representa o movimento vertical (elevação)
-ArduinoLEDMatrix matrix;          // Matriz de LEDs
-Neotimer timer(15000);            // Timer para simular 1 hora a cada 15 segundos
+ArduinoLEDMatrix matrix;
+Servo servoAzimuth;
+Servo servoElevation;
 
-// Variáveis globais
-const char* ssid = "SEU_SSID";          // Substitua pelo nome da sua rede WiFi
-const char* password = "SUA_SENHA";     // Substitua pela senha da sua rede WiFi
-const char* apiKey = "SUA_API_KEY";     // Substitua pela chave de API do seu canal ThingSpeak
-const char* channelID = "SEU_CANAL_ID"; // Substitua pelo ID do seu canal
+const int PINO_SERVO_AZIMUTH = 8;
+const int PINO_SERVO_ELEVATION = 9;
+const int PINO_ADC_VOLTAGEM = A0;
+const int PINO_BOTAO_MODO = 4;
+const int PINO_ADC_CORRENTE = A5;
 
-int horaSimulada = 12;     // Hora simulada inicial (começa ao meio-dia)
-float alpha = 0.0;         // Ângulo de elevação solar (graus)
-float gammaValue = 0.0;    // Ângulo de azimute solar (graus)
+const int LDR_TOP_LEFT = A1;
+const int LDR_TOP_RIGHT = A2;
+const int LDR_BOTTOM_LEFT = A3;
+const int LDR_BOTTOM_RIGHT = A4;
 
-int entrada_voltagem = A0; // Pino de leitura da tensão simulada
-float voltagem_inicial = 0; // Variável para armazenar a leitura da tensão
+//Insira aqui os dados da sua rede Wi-Fi 
+const char* ssid = "";      // Nome da rede Wi-Fi
+const char* password = "";  // Senha da rede Wi-Fi
 
-// Função que conecta o Arduino à rede WiFi
-void connectWiFi() {
+//Insira aqui sua chave de escrita do ThingSpeak
+const char* apiKey = "";    // Chave API (Write API Key)
+
+const long INTERVALO_LEITURAS = 2000;
+const long INTERVALO_MOVIMENTO_SERVO = 10000;
+const long INTERVALO_ENVIO_DADOS = 15000;
+const long INTERVALO_RECONEXAO = 60000;
+
+unsigned long tempoAnteriorLeituras = 0;
+unsigned long tempoAnteriorMovimento = 0;
+unsigned long tempoAnteriorEnvio = 0;
+unsigned long tempoAnteriorReconexao = 0;
+
+bool modoLDR = false;
+int horaSimulada = 6;
+int anguloElevacao = 90;
+int anguloAzimute = 90;
+float voltagemAtual = 0.0;
+float correnteAtual = 0.0;
+
+int ultimoEstadoBotao = HIGH;
+unsigned long ultimoTempoDebounce = 0;
+const long delayDebounce = 50;
+
+#define EEPROM_TAMANHO 512
+bool modoOffline = true;
+int enderecoEEPROM = 0;
+struct DadoSolar { int azimute; int elevacao; float voltagem; float corrente; };
+const int BYTES_POR_REGISTRO = sizeof(DadoSolar);
+
+void animacaoConectando() {
+  matrix.loadSequence(LEDMATRIX_ANIMATION_WIFI_SEARCH);
+  matrix.play(true);
+}
+void animacaoConectado() {
+  matrix.loadFrame(LEDMATRIX_HEART_BIG);
+}
+void animacaoErro() {
+  matrix.loadFrame(LEDMATRIX_DANGER);
+}
+
+void iniciarConexaoWiFi() {
+  Serial.println("Tentando conectar ao Wi-Fi...");
+  animacaoConectando();
   WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.println("Conectando ao WiFi...");
-  }
-  Serial.println("WiFi conectado!");
-  Serial.print("IP local: ");
-  Serial.println(WiFi.localIP());
-  matrix.loadFrame(LEDMATRIX_HEART); // Mostra ícone de sucesso na matriz
 }
 
-// Função que envia dados ao canal ThingSpeak
-void sendDataToThingSpeak(int azimute, int elevacao, float voltage) {
-  if (WiFi.status() == WL_CONNECTED) {
-    WiFiClient client;
-    HttpClient http(client, "api.thingspeak.com", 80);
+void salvarNaEEPROM(const DadoSolar& dados) {
+  if (enderecoEEPROM + BYTES_POR_REGISTRO > EEPROM_TAMANHO) return;
+  EEPROM.put(enderecoEEPROM, dados);
+  enderecoEEPROM += BYTES_POR_REGISTRO;
+}
 
-    // Monta a URL com os dados a serem enviados
-    String url = "/update?api_key=" + String(apiKey) +
-                 "&field1=" + String(azimute) +
-                 "&field2=" + String(elevacao) +
-                 "&field3=" + String(voltage);
-
-    http.beginRequest();
-    http.get(url);
-    http.endRequest();
-
-    int httpResponseCode = http.responseStatusCode();
-    if (httpResponseCode > 0) {
-      Serial.println("Dados enviados ao ThingSpeak!");
-      matrix.loadFrame(LEDMATRIX_CHECK); // Mostra ícone de sucesso na matriz
-    } else {
-      Serial.print("Erro ao enviar: ");
-      Serial.println(httpResponseCode);
-      matrix.loadFrame(LEDMATRIX_DANGER); // Mostra ícone de erro
-    }
+void enviarDadosThingSpeak(int azimute, int elevacao, float voltagem, float corrente) {
+  if (WiFi.status() != WL_CONNECTED) {
+    modoOffline = true;
+    animacaoErro();
+    return;
+  }
+  WiFiClient client;
+  HttpClient http(client, "api.thingspeak.com", 80);
+  http.setHttpResponseTimeout(10000);
+  String url = "/update?api_key=" + String(apiKey) +
+               "&field1=" + String(azimute) +
+               "&field2=" + String(elevacao) +
+               "&field3=" + String(voltagem) +
+               "&field4=" + String(corrente);
+  http.get(url);
+  int httpResponseCode = http.responseStatusCode();
+  if (httpResponseCode == 200) {
+    animacaoConectado();
   } else {
-    Serial.println("WiFi não conectado");
-    matrix.loadFrame(LEDMATRIX_DANGER);
-    connectWiFi(); // Tenta reconectar
+    animacaoErro();
+    modoOffline = true;
   }
 }
 
-// Função que calcula o ângulo do Sol com base na hora simulada
-void calcAngular(int hora) {
-  // HRA: Hora angular (em radianos)
-  float HRA = (15 * (hora - 12)) * PI / 180;
-
-  // Declinação solar e latitude fixadas (em radianos)
-  float ang_delta_rad = 23.45 * PI / 180;     // Inclinação da Terra
-  float latitude = -22.9027 * PI / 180;       // Latitude do Rio de Janeiro
-
-  // Cálculo da elevação (alpha)
-  float alpha_rad = asin(sin(ang_delta_rad) * sin(latitude) +
-                         cos(ang_delta_rad) * cos(latitude) * cos(HRA));
-  alpha = alpha_rad * 180 / PI;
-
-  // Cálculo do azimute (gamma)
-  float gamma_rad = acos((sin(ang_delta_rad) * cos(latitude) -
-                         cos(ang_delta_rad) * sin(latitude) * cos(HRA)) / cos(alpha_rad));
-  gammaValue = gamma_rad * 180 / PI;
-
-  // Limita os ângulos entre 0 e 180 graus (faixa permitida pelo servo)
-  if (alpha < 0) alpha = 0;
-  if (alpha > 180) alpha = 180;
-  if (gammaValue < 0) gammaValue = 0;
-  if (gammaValue > 180) gammaValue = 180;
+void enviarDadosEEPROM() {
+  animacaoConectado();
+  for (int addr = 0; addr < enderecoEEPROM; addr += BYTES_POR_REGISTRO) {
+    if (WiFi.status() != WL_CONNECTED) {
+      modoOffline = true;
+      animacaoErro();
+      return;
+    }
+    DadoSolar dadosLidos;
+    EEPROM.get(addr, dadosLidos);
+    enviarDadosThingSpeak(dadosLidos.azimute, dadosLidos.elevacao, dadosLidos.voltagem, dadosLidos.corrente);
+    delay(1000);
+  }
+  for (int i = 0; i < enderecoEEPROM; i++) EEPROM.write(i, 0);
+  enderecoEEPROM = 0;
+  modoOffline = false;
 }
 
-// Função de configuração (executada uma vez ao ligar o Arduino)
+void lerSensores() {
+  int leituraAdcVoltagem = analogRead(PINO_ADC_VOLTAGEM);
+  voltagemAtual = (leituraAdcVoltagem / 1023.0) * 25.0;
+  int leituraAdcCorrente = analogRead(PINO_ADC_CORRENTE);
+  float tensaoSensor = (leituraAdcCorrente / 1023.0) * 5.0;
+  correnteAtual = tensaoSensor;
+}
+
+void moverServosSimulado() {
+  horaSimulada++;
+  if (horaSimulada >= 24) horaSimulada = 0;
+  if (horaSimulada >= 6 && horaSimulada <= 18) {
+    anguloAzimute = map(horaSimulada, 6, 18, 0, 180);
+    float anguloNormalizado = abs(horaSimulada - 12);
+    anguloElevacao = 90 - (anguloNormalizado * 15);
+  } else {
+    anguloElevacao = 0;
+  }
+  servoAzimuth.write(anguloAzimute);
+  servoElevation.write(anguloElevacao);
+}
+
+void moverServosComLDR() {
+  int topLeft = analogRead(LDR_TOP_LEFT);
+  int topRight = analogRead(LDR_TOP_RIGHT);
+  int bottomLeft = analogRead(LDR_BOTTOM_LEFT);
+  int bottomRight = analogRead(LDR_BOTTOM_RIGHT);
+  int diffAzimute = (topLeft + bottomLeft) - (topRight + bottomRight);
+  int diffElevacao = (topLeft + topRight) - (bottomLeft + bottomRight);
+  int tolerancia = 50;
+  if (abs(diffAzimute) > tolerancia) anguloAzimute += (diffAzimute > 0) ? -1 : 1;
+  if (abs(diffElevacao) > tolerancia) anguloElevacao += (diffElevacao > 0) ? 1 : -1;
+  anguloAzimute = constrain(anguloAzimute, 0, 180);
+  anguloElevacao = constrain(anguloElevacao, 0, 180);
+  servoAzimuth.write(anguloAzimute);
+  servoElevation.write(anguloElevacao);
+}
+
+void verificarBotaoDeModo() {
+  int leitura = digitalRead(PINO_BOTAO_MODO);
+  if (leitura == LOW && ultimoEstadoBotao == HIGH) {
+    if (millis() - ultimoTempoDebounce > delayDebounce) {
+      modoLDR = !modoLDR;
+      ultimoTempoDebounce = millis();
+    }
+  }
+  ultimoEstadoBotao = leitura;
+}
+
 void setup() {
-  matrix.begin();                               // Inicializa a matriz de LEDs
-  matrix.loadSequence(LEDMATRIX_ANIMATION_WIFI_SEARCH); // Mostra animação de conexão
-  matrix.play(true);                            // Roda animação contínua
-
-  Serial.begin(9600);                           // Inicializa monitor serial
-  connectWiFi();                                // Conecta à rede WiFi
-
-  servoAzimuth.attach(8);                       // Conecta o servo horizontal ao pino 8
-  servoElevation.attach(9);                     // Conecta o servo vertical ao pino 9
-
-  servoAzimuth.write(0);                        // Posição inicial
-  servoElevation.write(60);
+  Serial.begin(9600);
+  matrix.begin();
+  pinMode(PINO_BOTAO_MODO, INPUT_PULLUP);
+  servoAzimuth.attach(PINO_SERVO_AZIMUTH);
+  servoElevation.attach(PINO_SERVO_ELEVATION);
+  servoAzimuth.write(anguloAzimute);
+  servoElevation.write(anguloElevacao);
+  iniciarConexaoWiFi();
 }
 
-// Loop principal (roda infinitamente)
 void loop() {
-  // Lê a tensão analógica (simulando a saída de um painel solar)
-  voltagem_inicial = analogRead(entrada_voltagem) / 1024.0 * 25.0;
+  unsigned long tempoAtual = millis();
+  verificarBotaoDeModo();
 
-  // A cada 15 segundos, simula a passagem de 1 hora
-  if (timer.repeat()) {
-    horaSimulada = (horaSimulada + 1) % 24;  // Incrementa a hora simulada
-    calcAngular(horaSimulada);               // Atualiza os ângulos do Sol
-
-    // Move os servos para simular rastreamento solar
-    servoAzimuth.write(gammaValue);
-    servoElevation.write(alpha);
-
-    // Mostra os dados no monitor serial
-    Serial.print("Hora: "); Serial.print(horaSimulada);
-    Serial.print(" | Azimute: "); Serial.print(gammaValue);
-    Serial.print(" | Elevação: "); Serial.println(alpha);
+  if (modoLDR) {
+    moverServosComLDR();
+  } else if (tempoAtual - tempoAnteriorMovimento >= INTERVALO_MOVIMENTO_SERVO) {
+    tempoAnteriorMovimento = tempoAtual;
+    moverServosSimulado();
   }
 
-  // Envia os dados atuais para a nuvem (ThingSpeak)
-  sendDataToThingSpeak(servoAzimuth.read(), servoElevation.read(), voltagem_inicial);
+  if (tempoAtual - tempoAnteriorLeituras >= INTERVALO_LEITURAS) {
+    tempoAnteriorLeituras = tempoAtual;
+    lerSensores();
+  }
 
-  delay(1000); // Aguarda 1 segundo antes do próximo ciclo
+  if (tempoAtual - tempoAnteriorEnvio >= INTERVALO_ENVIO_DADOS) {
+    tempoAnteriorEnvio = tempoAtual;
+    DadoSolar dadosAtuais = { (int)servoAzimuth.read(), (int)servoElevation.read(), voltagemAtual, correnteAtual };
+    if (modoOffline) salvarNaEEPROM(dadosAtuais);
+    else enviarDadosThingSpeak(dadosAtuais.azimute, dadosAtuais.elevacao, dadosAtuais.voltagem, dadosAtuais.corrente);
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    if (!modoOffline) {
+      modoOffline = true;
+      animacaoErro();
+    }
+    if (tempoAtual - tempoAnteriorReconexao >= INTERVALO_RECONEXAO) {
+      tempoAnteriorReconexao = tempoAtual;
+      iniciarConexaoWiFi();
+    }
+  } else if (modoOffline) {
+    enviarDadosEEPROM();
+  }
 }
 `; 
 
@@ -200,4 +278,5 @@ void loop() {
 
 </body>
 </html>
+
 
